@@ -1,9 +1,10 @@
 module BitArray where
 
-import BitArray.Prelude hiding (map, toList, traverse_, foldr)
+import BitArray.Prelude
 import qualified BitArray.Parser as Parser
 import qualified Text.ParserCombinators.ReadP as ReadP
 import qualified Data.Foldable as Foldable
+import qualified Data.MonoTraversable as MonoTraversable
 import qualified NumericQQ
 
 
@@ -62,6 +63,66 @@ instance (FiniteBits a) => IsString (BitArray a) where
   fromString =
     fromMaybe (error "Unparsable bit array string") . parseString
 
+type instance MonoTraversable.Element (BitArray a) = Bool
+
+instance (FiniteBits a) => MonoTraversable.MonoFunctor (BitArray a) where
+  omap f t = foldrBits (\b w -> setFirstBit (f b) .|. shiftL w 1) zeroBits t where
+    setFirstBit True = setBit zeroBits 0
+    setFirstBit _    = zeroBits
+  {-# INLINE omap #-}
+
+instance (FiniteBits a) => MonoTraversable.MonoFoldable (BitArray a) where
+  ofoldMap f = foldrBits (mappend . f) mempty
+  ofoldr = foldrBits
+  ofoldl' f z0 t = foldrBits f' id t z0 where
+    f' x k z = k $! f z x
+  ofoldr1Ex f t = indexedFoldrBits 1 f (testBit t 0) t
+  ofoldl1Ex' f t = indexedFoldrBits 1 f' id t (testBit t 0) where
+    f' x k z = k $! f z x
+  {-# INLINE headEx #-}
+  {-# INLINE lastEx #-}
+  {-# INLINE maximumByEx #-}
+  {-# INLINE minimumByEx #-}
+  {-# INLINE oall #-}
+  {-# INLINE oany #-}
+  {-# INLINE ocompareLength #-}
+  {-# INLINE ofoldMap #-}
+  {-# INLINE ofoldMap1Ex #-}
+  {-# INLINE ofoldl' #-}
+  {-# INLINE ofoldl1Ex' #-}
+  {-# INLINE ofoldlM #-}
+  {-# INLINE ofoldr #-}
+  {-# INLINE ofoldr1Ex #-}
+  {-# INLINE oforM_ #-}
+  {-# INLINE ofor_ #-}
+  {-# INLINE olength #-}
+  {-# INLINE olength64 #-}
+  {-# INLINE omapM_ #-}
+  {-# INLINE onull #-}
+  {-# INLINE otoList #-}
+  {-# INLINE otraverse_ #-}
+  {-# INLINE unsafeHead #-}
+  {-# INLINE unsafeLast #-}
+
+{-# INLINE foldrBits #-}
+foldrBits :: (FiniteBits a)
+          => (MonoTraversable.Element (BitArray a) -> b -> b)
+          -> b
+          -> BitArray a
+          -> b
+foldrBits = indexedFoldrBits 0
+
+{-# INLINE indexedFoldrBits #-}
+indexedFoldrBits :: (FiniteBits a)
+                 => Int
+                 -> (MonoTraversable.Element (BitArray a) -> b -> b)
+                 -> b
+                 -> BitArray a
+                 -> b
+indexedFoldrBits i f z t
+  | i == finiteBitSize t = z
+  | otherwise = testBit t i `f` indexedFoldrBits (1 + i) f z t
+
 -- * Constructors and converters
 -------------------------
 
@@ -110,17 +171,17 @@ parseString = fmap fst . listToMaybe . ReadP.readP_to_S Parser.bits
 -- Convert into a list of set bits.
 --
 -- The list is ordered from least significant to most significant bit.
-{-# INLINABLE toList #-}
-toList :: (FiniteBits a) => BitArray a -> [a]
-toList (BitArray w) =
+{-# INLINABLE toSetBitList #-}
+toSetBitList :: (FiniteBits a) => BitArray a -> [a]
+toSetBitList (BitArray w) =
   processIndexes [0 .. (pred . finiteBitSize) w]
   where
     processIndexes = filter (\w' -> w .&. w' /= zeroBits) . fmap bit
 
 -- | Construct from a list of set bits.
-{-# INLINABLE fromList #-}
-fromList :: (FiniteBits a) => [a] -> BitArray a
-fromList = BitArray . inline Foldable.foldr (.|.) zeroBits
+{-# INLINABLE fromSetBitList #-}
+fromSetBitList :: (FiniteBits a) => [a] -> BitArray a
+fromSetBitList = BitArray . inline Foldable.foldr (.|.) zeroBits
 
 -- |
 -- Convert into a list of boolean values,
@@ -129,7 +190,7 @@ fromList = BitArray . inline Foldable.foldr (.|.) zeroBits
 -- The list is ordered from least significant to most significant bit.
 {-# INLINABLE toBoolList #-}
 toBoolList :: (FiniteBits a) => BitArray a -> [Bool]
-toBoolList (BitArray w) = testBit w <$> [0 .. (pred . finiteBitSize) w]
+toBoolList = MonoTraversable.otoList
 
 -- |
 -- Construct from a list of boolean flags for the "set" status of each bit.
@@ -137,27 +198,27 @@ toBoolList (BitArray w) = testBit w <$> [0 .. (pred . finiteBitSize) w]
 -- The list must be ordered from least significant to most significant bit.
 {-# INLINABLE fromBoolList #-}
 fromBoolList :: (FiniteBits a) => [Bool] -> BitArray a
-fromBoolList = inline fromList . fmap (bit . fst) . filter snd . zip [zeroBits..]
+fromBoolList = inline fromSetBitList . fmap (bit . fst) . filter snd . zip [zeroBits..]
 
 -- * Utils
 -------------------------
 
 -- | Map over the set bits.
-{-# INLINABLE map #-}
-map :: (FiniteBits a, FiniteBits b) => (a -> b) -> BitArray a -> BitArray b
-map f = inline fromList . fmap f . inline toList
+{-# INLINABLE mapSetBitList #-}
+mapSetBitList :: (FiniteBits a, FiniteBits b) => (a -> b) -> BitArray a -> BitArray b
+mapSetBitList f = inline fromSetBitList . fmap f . inline toSetBitList
 
 -- | Perform a right-associative fold over the set bits.
-{-# INLINABLE foldr #-}
-foldr :: (FiniteBits a) => (a -> b -> b) -> b -> BitArray a -> b
-foldr step init = inline Foldable.foldr step init . inline toList
+{-# INLINABLE foldrSetBitList #-}
+foldrSetBitList :: (FiniteBits a) => (a -> b -> b) -> b -> BitArray a -> b
+foldrSetBitList step init = inline Foldable.foldr step init . inline toSetBitList
 
 -- | Traverse thru set bits.
-{-# INLINABLE mapM_ #-}
-mapM_ :: (FiniteBits a, Monad m) => (a -> m b) -> BitArray a -> m ()
-mapM_ f = inline Foldable.mapM_ f . inline toList
+{-# INLINABLE mapSetBitListM_ #-}
+mapSetBitListM_ :: (FiniteBits a, Monad m) => (a -> m b) -> BitArray a -> m ()
+mapSetBitListM_ f = inline Foldable.mapM_ f . inline toSetBitList
 
 -- | Traverse thru set bits.
-{-# INLINABLE traverse_ #-}
-traverse_ :: (FiniteBits a, Applicative f) => (a -> f b) -> BitArray a -> f ()
-traverse_ f = inline Foldable.traverse_ f . inline toList
+{-# INLINABLE traverseSetBitListM_ #-}
+traverseSetBitListM_ :: (FiniteBits a, Applicative f) => (a -> f b) -> BitArray a -> f ()
+traverseSetBitListM_ f = inline Foldable.traverse_ f . inline toSetBitList
